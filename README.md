@@ -1,2 +1,2 @@
-# cryptopals
-Solution of cryptopals challenges in Rust.
+## Cryptopals
+Solution of [cryptopals challenges](https://cryptopals.com/) in Rust.
