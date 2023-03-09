@@ -80,6 +80,14 @@ pub fn base64_decode(data: &[u8]) ->Vec<u8> {
     result
 }
 
+pub fn fixed_xor(x: &[u8], y: &[u8]) -> Vec<u8> {
+    assert_eq!(x.len(), y.len());
+
+    (0..x.len())
+        .map(|i| x[i] ^ y[i])
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -109,7 +117,7 @@ mod tests {
         let base64_string = base64_encode(&bytes[..]);
         let base64_string = String::from_utf8(base64_string).unwrap();
 
-        assert_eq!(base64_string, expected_base64_string);
+        assert_eq!(expected_base64_string, base64_string);
     }
 
     #[test]    
@@ -133,8 +141,6 @@ mod tests {
 
         assert_eq!(expected_base64_string, base64_string);
     }
-
-
 
     #[test]
     fn test_base64_decode() {
@@ -165,6 +171,16 @@ mod tests {
         let string = base64_decode(base64_string.as_bytes());
 
         assert_eq!(expected_string, string);
+    }
+
+    #[test]
+    fn test_fixed_xor() {
+        let s1 = hex_decode("1c0111001f010100061a024b53535009181c").unwrap();
+        let s2 = hex_decode("686974207468652062756c6c277320657965").unwrap();
+
+        let expected_bytes = hex_decode("746865206b696420646f6e277420706c6179").unwrap();
+
+        assert_eq!(expected_bytes, fixed_xor(&s1[..], &s2[..]));
     }
 }
 
