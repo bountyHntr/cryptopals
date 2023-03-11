@@ -1,5 +1,6 @@
 use std::cmp::min;
 use std::fmt::{Write, Display};
+use std::iter::Cycle;
 use std::num::ParseIntError;
 use std::path::Path;
 use std::fs;
@@ -143,16 +144,16 @@ impl FrequencyTable {
         sum_absolute_error / 26f32
     }
 
-    pub fn decrypt_single_byte_xor(&self, data: &[u8]) -> (Vec<u8>, f32) {
+    pub fn decrypt_single_byte_xor(&self, ciphertext: &[u8]) -> (Vec<u8>, f32) {
         let mut best_err = f32::INFINITY;
         let mut best_plaintext = String::new();
 
         for byte in 0u8..=255 {
-            let bytes_vec= vec![byte; data.len()];
-            let plaintext = fixed_xor(data, &bytes_vec[..]);
+            let bytes_vec= vec![byte; ciphertext.len()];
+            let plaintext = fixed_xor(ciphertext, &bytes_vec);
     
             if let Ok(plaintext) = String::from_utf8(plaintext) {
-                let plaintext_table = FrequencyTable::from(&plaintext[..]);
+                let plaintext_table = FrequencyTable::from(plaintext.as_str());
                 let mae = self.mean_absolute_error(&plaintext_table);
 
                 if mae < best_err {
@@ -217,6 +218,21 @@ impl Display for FrequencyTable {
     }
 } 
 
+pub struct EncryptorXorRepeatingKey(Cycle<std::vec::IntoIter<u8>>);
+
+impl EncryptorXorRepeatingKey {
+    pub fn new(key: Vec<u8>) -> EncryptorXorRepeatingKey {
+        Self(key.into_iter().cycle())
+    }
+
+    pub fn encrypt(&mut self, plaintext: &[u8]) -> Vec<u8> {
+        plaintext
+            .iter()
+            .map(|&byte| byte ^ self.0.next().unwrap())
+            .collect()
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -233,7 +249,7 @@ mod tests {
         let bytes = [73, 39, 109, 32, 107, 105, 108, 108, 105, 110, 103, 32, 121, 111, 117, 114, 32, 98, 114, 97, 105, 110, 32, 108, 105, 107, 101, 32, 97, 32, 112, 111, 105, 115, 111, 110, 111, 117, 115, 32, 109, 117, 115, 104, 114, 111, 111, 109];
         let expected_hex_string = String::from("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d");
         
-        assert_eq!(expected_hex_string, hex_encode(&bytes[..]));
+        assert_eq!(expected_hex_string, hex_encode(&bytes));
     }
 
     #[test]
@@ -249,7 +265,7 @@ mod tests {
         let bytes = hex_decode("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d").unwrap();
         let expected_base64_string = String::from("SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t");
     
-        let base64_string = base64_encode(&bytes[..]);
+        let base64_string = base64_encode(&bytes);
         let base64_string = String::from_utf8(base64_string).unwrap();
 
         assert_eq!(expected_base64_string, base64_string);
@@ -260,7 +276,7 @@ mod tests {
         let bytes = "Ma".as_bytes();
         let expected_base64_string = String::from("TWE=");
     
-        let base64_string = base64_encode(&bytes[..]);
+        let base64_string = base64_encode(&bytes);
         let base64_string = String::from_utf8(base64_string).unwrap();
 
         assert_eq!(expected_base64_string, base64_string);
@@ -271,7 +287,7 @@ mod tests {
         let bytes = "M".as_bytes();
         let expected_base64_string = String::from("TQ==");
     
-        let base64_string = base64_encode(&bytes[..]);
+        let base64_string = base64_encode(&bytes);
         let base64_string = String::from_utf8(base64_string).unwrap();
 
         assert_eq!(expected_base64_string, base64_string);
@@ -283,7 +299,7 @@ mod tests {
         let expected_hex_string = String::from("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d");
     
         let hex_string = base64_decode(base64_string.as_bytes());
-        let hex_string = hex_encode(&hex_string[..]);
+        let hex_string = hex_encode(&hex_string);
 
         assert_eq!(expected_hex_string, hex_string);
     }
@@ -315,7 +331,7 @@ mod tests {
 
         let expected_bytes = hex_decode("746865206b696420646f6e277420706c6179").unwrap();
 
-        assert_eq!(expected_bytes, fixed_xor(&s1[..], &s2[..]));
+        assert_eq!(expected_bytes, fixed_xor(&s1, &s2));
     }
 
     #[test]
@@ -393,11 +409,11 @@ mod tests {
     #[test]
     fn test_decrypt_single_byte_xor() {
         let table_bytes= fs::read(FREQUENCY_TABLE_PATH).unwrap();
-        let table: FrequencyTable = bincode::deserialize(&table_bytes[..]).unwrap();
+        let table: FrequencyTable = bincode::deserialize(&table_bytes).unwrap();
 
         let ciphertext = hex_decode("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736").unwrap();
-        let (plaintext, ..) = table.decrypt_single_byte_xor(&ciphertext[..]);
-        let plaintext = str::from_utf8(&plaintext[..]).unwrap();
+        let (plaintext, ..) = table.decrypt_single_byte_xor(&ciphertext);
+        let plaintext = str::from_utf8(&plaintext).unwrap();
 
         assert_eq!("Cooking MC's like a pound of bacon", plaintext);
     }
@@ -405,7 +421,7 @@ mod tests {
     #[test]
     fn test_decrypt_single_byte_xor_from_file() {
         let table_bytes = fs::read(FREQUENCY_TABLE_PATH).unwrap();
-        let table: FrequencyTable = bincode::deserialize(&table_bytes[..]).unwrap();
+        let table: FrequencyTable = bincode::deserialize(&table_bytes).unwrap();
 
         let mut best_err = f32::INFINITY;
         let mut best_plaintext = Vec::new();
@@ -415,7 +431,7 @@ mod tests {
         for line in BufReader::new(file).lines() {
             let line = line.unwrap();
             let line = hex_decode(&line).unwrap();
-            let (plaintext, err) = table.decrypt_single_byte_xor(&line[..]);
+            let (plaintext, err) = table.decrypt_single_byte_xor(&line);
 
             if err < best_err {
                 best_plaintext = plaintext;
@@ -423,7 +439,22 @@ mod tests {
             }
         }
 
-        assert_eq!("nOW\0THAT\0THE\0PARTY\0IS\0JUMPING*", str::from_utf8(&best_plaintext[..]).unwrap());
+        assert_eq!("nOW\0THAT\0THE\0PARTY\0IS\0JUMPING*", str::from_utf8(&best_plaintext).unwrap());
+    }
+
+    #[test]
+    fn test_repeating_key_xor() {
+        let plaintext = "Burning 'em, if you ain't quick and nimble\n\
+                               I go crazy when I hear a cymbal";
+
+        let key = "ICE".as_bytes().to_owned();
+        let mut encryptor = EncryptorXorRepeatingKey::new(key);
+
+        let ciphertext = encryptor.encrypt(plaintext.as_bytes());
+        let expected_ciphertext =hex_decode("0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272\
+                                                      a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f").unwrap();
+
+        assert_eq!(expected_ciphertext, ciphertext);
     }
 }
 
