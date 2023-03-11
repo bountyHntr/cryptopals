@@ -7,6 +7,8 @@ use std::io;
 use std::convert::From;
 use std::str;
 
+use serde::{Serialize, Deserialize};
+
 pub fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len()*2);
 
@@ -106,6 +108,7 @@ where
     cb(src)
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct FrequencyTable {
     letter_counts: [u32; 26],
     total_letters: u64,
@@ -140,8 +143,8 @@ impl FrequencyTable {
         sum_absolute_error / 26f32
     }
 
-    pub fn decrypt_single_byte_xor(&self, data: &[u8]) -> Vec<u8> {
-        let mut best_score = f32::INFINITY;
+    pub fn decrypt_single_byte_xor(&self, data: &[u8]) -> (Vec<u8>, f32) {
+        let mut best_err = f32::INFINITY;
         let mut best_plaintext = String::new();
 
         for byte in 0u8..=255 {
@@ -152,14 +155,14 @@ impl FrequencyTable {
                 let plaintext_table = FrequencyTable::from(&plaintext[..]);
                 let mae = self.mean_absolute_error(&plaintext_table);
 
-                if mae < best_score {
-                    best_score = mae;
+                if mae < best_err {
+                    best_err = mae;
                     best_plaintext = plaintext;
 
                 }
             }
         }
-        best_plaintext.into_bytes()
+        (best_plaintext.into_bytes(), best_err)
     }
 
     fn char_to_idx(c: char) -> Option<usize> {
@@ -219,8 +222,11 @@ impl Display for FrequencyTable {
 mod tests {
     use std::fs::File;
     use std::path::PathBuf;
+    use std::io::{BufReader, BufRead};
 
     use super::*;
+
+    const FREQUENCY_TABLE_PATH: &str = "./data/frequency_table.bin";
 
     #[test]
     fn test_hex_encode() {
@@ -384,17 +390,40 @@ mod tests {
         assert_eq!(expected_mae, table1.mean_absolute_error(&table2));
     }
 
-    #[ignore]
     #[test]
     fn test_decrypt_single_byte_xor() {
-        let path = Path::new(".ascii_text_archive");
-        let table = FrequencyTable::try_from(path).unwrap();
+        let table_bytes= fs::read(FREQUENCY_TABLE_PATH).unwrap();
+        let table: FrequencyTable = bincode::deserialize(&table_bytes[..]).unwrap();
 
         let ciphertext = hex_decode("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736").unwrap();
-        let plaintext = table.decrypt_single_byte_xor(&ciphertext[..]);
+        let (plaintext, ..) = table.decrypt_single_byte_xor(&ciphertext[..]);
         let plaintext = str::from_utf8(&plaintext[..]).unwrap();
 
         assert_eq!("Cooking MC's like a pound of bacon", plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_single_byte_xor_from_file() {
+        let table_bytes = fs::read(FREQUENCY_TABLE_PATH).unwrap();
+        let table: FrequencyTable = bincode::deserialize(&table_bytes[..]).unwrap();
+
+        let mut best_err = f32::INFINITY;
+        let mut best_plaintext = Vec::new();
+
+        let file = File::open("./data/task4.txt").unwrap();
+    
+        for line in BufReader::new(file).lines() {
+            let line = line.unwrap();
+            let line = hex_decode(&line).unwrap();
+            let (plaintext, err) = table.decrypt_single_byte_xor(&line[..]);
+
+            if err < best_err {
+                best_plaintext = plaintext;
+                best_err = err;
+            }
+        }
+
+        assert_eq!("nOW\0THAT\0THE\0PARTY\0IS\0JUMPING*", str::from_utf8(&best_plaintext[..]).unwrap());
     }
 }
 
