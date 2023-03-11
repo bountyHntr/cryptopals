@@ -233,6 +233,22 @@ impl EncryptorXorRepeatingKey {
     }
 }
 
+pub fn edit_distance(x: &[u8], y: &[u8]) -> u32 {
+    fixed_xor(x, y)
+        .into_iter()
+        .fold(0u32, |acc, byte| acc + byte.count_ones())
+}
+
+pub struct DecryptorXorRepeatingKey {
+
+}
+
+impl DecryptorXorRepeatingKey {
+    pub fn new() -> DecryptorXorRepeatingKey {
+        todo!()
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -426,7 +442,7 @@ mod tests {
         let mut best_err = f32::INFINITY;
         let mut best_plaintext = Vec::new();
 
-        let file = File::open("./data/task4.txt").unwrap();
+        let file = File::open("./data/set1_challenge4.txt").unwrap();
     
         for line in BufReader::new(file).lines() {
             let line = line.unwrap();
@@ -455,6 +471,14 @@ mod tests {
                                                       a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f").unwrap();
 
         assert_eq!(expected_ciphertext, ciphertext);
+    }
+
+    #[test]
+    fn test_edit_distance() {
+        let x = "this is a test".as_bytes();
+        let y = "wokka wokka!!!".as_bytes();
+
+        assert_eq!(37, edit_distance(x, y));
     }
 }
 
