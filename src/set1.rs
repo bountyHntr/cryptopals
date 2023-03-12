@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::cmp::{min, Reverse};
 use std::fmt::{Write, Display};
 use std::iter::Cycle;
 use std::num::ParseIntError;
@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::convert::From;
 use std::str;
+use std::collections::BinaryHeap;
 
 use serde::{Serialize, Deserialize};
 
@@ -26,6 +27,17 @@ pub fn hex_decode(s: &str) -> Result<Vec<u8>, ParseIntError> {
         .collect()
 }
 
+fn plain_byte_to_base64(plain_byte: u8) -> u8 {
+    match plain_byte {
+        0..=25 => b'A' + plain_byte,
+        26..=51 => b'a' + plain_byte - 26,
+        52..=61 => b'0' + plain_byte - 52,
+        62 => b'+',
+        63 => b'/',
+        _ => panic!("invalid byte value {}", plain_byte)
+    }
+}
+
 pub fn base64_encode(data: &[u8]) -> Vec<u8> {
     (0..data.len())
         .step_by(3)
@@ -40,18 +52,30 @@ pub fn base64_encode(data: &[u8]) -> Vec<u8> {
                     let byte = ((uint >> 18) & 0x3f) as u8;
                     uint = uint << 6;
         
-                    match byte {
-                        0..=25 => b'A' + byte,
-                        26..=51 => b'a' + byte - 26,
-                        52..=61 => b'0' + byte - 52,
-                        62 => b'+',
-                        63 => b'/',
-                        _ => panic!("invalid byte value {}", byte)
-                    }
+                    plain_byte_to_base64(byte)
                 })
                 .chain((0..3-bytes.len()).map(|_| b'='))
         })
         .collect()
+}
+
+fn base64_to_plain_byte(base64_byte: u8) -> (u8, bool) {
+    let mut skip_byte = false;
+
+    let plain_byte = match base64_byte {
+        byte @ b'A'..=b'Z' => byte - b'A',
+        byte @ b'a'..=b'z' => byte - b'a' + 26,
+        byte @ b'0'..=b'9' => byte - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        b'=' => {
+            skip_byte = true;
+            0
+        },
+        byte => panic!("invalid base64 byte value {}", byte),
+    };
+
+    (plain_byte, skip_byte)
 }
 
 pub fn base64_decode(data: &[u8]) ->Vec<u8> {
@@ -60,18 +84,10 @@ pub fn base64_decode(data: &[u8]) ->Vec<u8> {
 
     for i in (0..data.len()).step_by(4) {
         let uint = (0..4).fold(0u32, |acc, j| {
-            let byte = match data[i+j] {
-                byte @ b'A'..=b'Z' => byte - b'A',
-                byte @ b'a'..=b'z' => byte - b'a' + 26,
-                byte @ b'0'..=b'9' => byte - b'0' + 52,
-                b'+' => 62,
-                b'/' => 63,
-                b'=' => {
-                    skip_bytes += 1;
-                    0
-                },
-                byte => panic!("invalid base64 byte value {}", byte),
-            };
+            let (byte, skip) = base64_to_plain_byte(data[i+j]);
+            if skip {
+                skip_bytes += 1;
+            }
 
             acc | ((byte as u32) << 6 * (3 - j))
         });
@@ -109,6 +125,28 @@ where
     cb(src)
 }
 
+pub struct DecryptSingleByteXorResult {
+    pub plaintext: Vec<u8>,
+    pub byte: u8,
+    pub err: f32,
+}
+
+impl DecryptSingleByteXorResult {
+    pub fn new() -> DecryptSingleByteXorResult {
+        DecryptSingleByteXorResult {
+            plaintext: Vec::new(),
+            byte: 0u8,
+            err: f32::INFINITY,
+        }
+    }
+
+    pub fn update(&mut self, plaintext: Vec<u8>, byte: u8, err: f32) {
+        self.plaintext = plaintext;
+        self.byte = byte;
+        self.err = err;
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct FrequencyTable {
     letter_counts: [u32; 26],
@@ -144,9 +182,8 @@ impl FrequencyTable {
         sum_absolute_error / 26f32
     }
 
-    pub fn decrypt_single_byte_xor(&self, ciphertext: &[u8]) -> (Vec<u8>, f32) {
-        let mut best_err = f32::INFINITY;
-        let mut best_plaintext = String::new();
+    pub fn decrypt_single_byte_xor(&self, ciphertext: &[u8]) -> DecryptSingleByteXorResult {
+        let mut result = DecryptSingleByteXorResult::new();
 
         for byte in 0u8..=255 {
             let bytes_vec= vec![byte; ciphertext.len()];
@@ -156,14 +193,13 @@ impl FrequencyTable {
                 let plaintext_table = FrequencyTable::from(plaintext.as_str());
                 let mae = self.mean_absolute_error(&plaintext_table);
 
-                if mae < best_err {
-                    best_err = mae;
-                    best_plaintext = plaintext;
-
+                if mae < result.err {
+                    result.update(plaintext.into_bytes(), byte, mae);
                 }
             }
         }
-        (best_plaintext.into_bytes(), best_err)
+
+        result
     }
 
     fn char_to_idx(c: char) -> Option<usize> {
@@ -218,16 +254,15 @@ impl Display for FrequencyTable {
     }
 } 
 
-pub struct EncryptorXorRepeatingKey(Cycle<std::vec::IntoIter<u8>>);
+pub struct XORerRepeatingKey(Cycle<std::vec::IntoIter<u8>>);
 
-impl EncryptorXorRepeatingKey {
-    pub fn new(key: Vec<u8>) -> EncryptorXorRepeatingKey {
+impl XORerRepeatingKey {
+    pub fn new(key: Vec<u8>) -> XORerRepeatingKey {
         Self(key.into_iter().cycle())
     }
 
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Vec<u8> {
-        plaintext
-            .iter()
+    pub fn xor(&mut self, src: &[u8]) -> Vec<u8> {
+        src.iter()
             .map(|&byte| byte ^ self.0.next().unwrap())
             .collect()
     }
@@ -239,14 +274,92 @@ pub fn edit_distance(x: &[u8], y: &[u8]) -> u32 {
         .fold(0u32, |acc, byte| acc + byte.count_ones())
 }
 
-pub struct DecryptorXorRepeatingKey {
-
-}
+pub struct DecryptorXorRepeatingKey(FrequencyTable);
 
 impl DecryptorXorRepeatingKey {
-    pub fn new() -> DecryptorXorRepeatingKey {
-        todo!()
+    const MAX_KEYSIZE: usize = 40;
+    const BLOCKS_TO_EVALUATE: usize = 4;
+    const NUMBER_OF_KEYSIZES: usize = 3;
+    const PRECISION_MULTIPLIER: f32 = 1000f32;
+    
+    pub fn new(frequency_table: FrequencyTable) -> DecryptorXorRepeatingKey {
+        Self(frequency_table)
     }
+
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+        let mut best_err = f32::INFINITY;
+        let mut best_plaintext = Vec::new();
+
+        let keysizes = Self::find_keysizes(ciphertext);
+
+        for keysize in keysizes.into_iter().filter(|&keysize| keysize > 0) {
+            let ciphertext_blocks = Self::build_ciphertext_blocks(ciphertext, keysize);
+
+            let key: Vec<_> = ciphertext_blocks 
+                .into_iter()
+                .map(|ciphertext| self.0.decrypt_single_byte_xor(&ciphertext).byte)
+                .collect();
+
+            let plaintext_bytes = XORerRepeatingKey::new(key).xor(ciphertext);
+            if let Ok(plaintext) = str::from_utf8(&plaintext_bytes) {
+                let plaintext_table = FrequencyTable::from(plaintext);
+                let err = self.0.mean_absolute_error(&plaintext_table);
+
+                if err < best_err {
+                    best_err = err;
+                    best_plaintext = plaintext_bytes;
+                }
+            }
+        }
+
+        best_plaintext
+    }
+
+    fn find_keysizes(ciphertext: &[u8]) -> [usize; Self::NUMBER_OF_KEYSIZES] {
+        let max_keysize = min(Self::MAX_KEYSIZE, ciphertext.len() / Self::BLOCKS_TO_EVALUATE);
+        let mut heap = BinaryHeap::with_capacity(max_keysize - 1);
+
+        for keysize in 2..=max_keysize {
+            let edit_distance_sum = ciphertext
+                .chunks(keysize)
+                .take(Self::BLOCKS_TO_EVALUATE)
+                .collect::<Vec<&[u8]>>()
+                .windows(2)
+                .fold(0u32, |acc, chunks| {
+                    acc + edit_distance(chunks[0], chunks[1])
+                });
+                
+            let mut edit_distance_sum = edit_distance_sum as f32 / keysize as f32;
+            edit_distance_sum /= (Self::BLOCKS_TO_EVALUATE - 1) as f32;
+            let edit_distance_sum = (edit_distance_sum * Self::PRECISION_MULTIPLIER) as u32;
+
+            heap.push((Reverse(edit_distance_sum), Reverse(keysize)));
+        }
+
+        let mut keysizes = [0; Self::NUMBER_OF_KEYSIZES];
+        for i in 0..keysizes.len() {
+            if let Some((_, Reverse(keysize))) = heap.pop() {
+                keysizes[i] = keysize;
+            } else {
+                break
+            }
+        }
+
+        keysizes
+    }
+
+    fn build_ciphertext_blocks(ciphertext: &[u8], keysize: usize) -> Vec<Vec<u8>> {
+        let mut blocks = vec![vec![0u8; ciphertext.len() / keysize]; keysize];
+            
+        for (i, chunk) in ciphertext.chunks_exact(keysize).enumerate() {
+            for (j, &byte) in chunk.iter().enumerate() {
+                blocks[j][i] = byte;
+            }
+        }
+
+        blocks
+    }
+
 }
 
 
@@ -428,8 +541,8 @@ mod tests {
         let table: FrequencyTable = bincode::deserialize(&table_bytes).unwrap();
 
         let ciphertext = hex_decode("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736").unwrap();
-        let (plaintext, ..) = table.decrypt_single_byte_xor(&ciphertext);
-        let plaintext = str::from_utf8(&plaintext).unwrap();
+        let result = table.decrypt_single_byte_xor(&ciphertext);
+        let plaintext = str::from_utf8(&result.plaintext).unwrap();
 
         assert_eq!("Cooking MC's like a pound of bacon", plaintext);
     }
@@ -447,11 +560,11 @@ mod tests {
         for line in BufReader::new(file).lines() {
             let line = line.unwrap();
             let line = hex_decode(&line).unwrap();
-            let (plaintext, err) = table.decrypt_single_byte_xor(&line);
+            let result = table.decrypt_single_byte_xor(&line);
 
-            if err < best_err {
-                best_plaintext = plaintext;
-                best_err = err;
+            if result.err < best_err {
+                best_plaintext = result.plaintext;
+                best_err = result.err;
             }
         }
 
@@ -459,16 +572,16 @@ mod tests {
     }
 
     #[test]
-    fn test_repeating_key_xor() {
+    fn test_encrypt_xor_repeating_key() {
         let plaintext = "Burning 'em, if you ain't quick and nimble\n\
                                I go crazy when I hear a cymbal";
 
         let key = "ICE".as_bytes().to_owned();
-        let mut encryptor = EncryptorXorRepeatingKey::new(key);
+        let mut encryptor = XORerRepeatingKey::new(key);
 
-        let ciphertext = encryptor.encrypt(plaintext.as_bytes());
-        let expected_ciphertext =hex_decode("0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272\
-                                                      a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f").unwrap();
+        let ciphertext = encryptor.xor(plaintext.as_bytes());
+        let expected_ciphertext = hex_decode("0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272\
+                                                       a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f").unwrap();
 
         assert_eq!(expected_ciphertext, ciphertext);
     }
@@ -479,6 +592,19 @@ mod tests {
         let y = "wokka wokka!!!".as_bytes();
 
         assert_eq!(37, edit_distance(x, y));
+    }
+
+    #[test]
+    fn test_decrypt_xor_repeating_key() {
+        let table_bytes = fs::read(FREQUENCY_TABLE_PATH).unwrap();
+        let table: FrequencyTable = bincode::deserialize(&table_bytes).unwrap();
+        let decryptor = DecryptorXorRepeatingKey::new(table);
+
+        let ciphertext = fs::read_to_string("./data/set1_challenge6.txt").unwrap().replace("\n", "");
+        let ciphertext = base64_decode(ciphertext.as_bytes());
+
+        let plaintext = decryptor.decrypt(&ciphertext);
+        assert!(String::from_utf8(plaintext).unwrap().is_ascii());
     }
 }
 
