@@ -1,7 +1,6 @@
-use std::cmp::{min, Reverse};
-use std::fmt::{Write, Display};
+use std::cmp::{self, Reverse};
+use std::fmt::Display;
 use std::iter::Cycle;
-use std::num::ParseIntError;
 use std::path::Path;
 use std::fs;
 use std::io;
@@ -11,94 +10,8 @@ use std::collections::BinaryHeap;
 
 use serde::{Serialize, Deserialize};
 
-pub fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len()*2);
+use crate::common;
 
-    for &b in bytes{
-        write!(s, "{:02x}", b).unwrap();
-    }
-    s
-}
-
-pub fn hex_decode(s: &str) -> Result<Vec<u8>, ParseIntError> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i+2], 16))
-        .collect()
-}
-
-fn plain_byte_to_base64(plain_byte: u8) -> u8 {
-    match plain_byte {
-        0..=25 => b'A' + plain_byte,
-        26..=51 => b'a' + plain_byte - 26,
-        52..=61 => b'0' + plain_byte - 52,
-        62 => b'+',
-        63 => b'/',
-        _ => panic!("invalid byte value {}", plain_byte)
-    }
-}
-
-pub fn base64_encode(data: &[u8]) -> Vec<u8> {
-    (0..data.len())
-        .step_by(3)
-        .flat_map(|i| {
-            let mut buffer = [0u8; 4];
-            let bytes = &data[i..min(i+3, data.len())];
-            buffer[1..=bytes.len()].copy_from_slice(bytes);
-            let mut uint = u32::from_be_bytes(buffer);
-
-            (0..=bytes.len())
-                .map(move |_| {
-                    let byte = ((uint >> 18) & 0x3f) as u8;
-                    uint = uint << 6;
-        
-                    plain_byte_to_base64(byte)
-                })
-                .chain((0..3-bytes.len()).map(|_| b'='))
-        })
-        .collect()
-}
-
-fn base64_to_plain_byte(base64_byte: u8) -> (u8, bool) {
-    let mut skip_byte = false;
-
-    let plain_byte = match base64_byte {
-        byte @ b'A'..=b'Z' => byte - b'A',
-        byte @ b'a'..=b'z' => byte - b'a' + 26,
-        byte @ b'0'..=b'9' => byte - b'0' + 52,
-        b'+' => 62,
-        b'/' => 63,
-        b'=' => {
-            skip_byte = true;
-            0
-        },
-        byte => panic!("invalid base64 byte value {}", byte),
-    };
-
-    (plain_byte, skip_byte)
-}
-
-pub fn base64_decode(data: &[u8]) ->Vec<u8> {
-    let mut skip_bytes = 0;
-    let mut result = Vec::with_capacity(data.len() / 4 * 3);
-
-    for i in (0..data.len()).step_by(4) {
-        let uint = (0..4).fold(0u32, |acc, j| {
-            let (byte, skip) = base64_to_plain_byte(data[i+j]);
-            if skip {
-                skip_bytes += 1;
-            }
-
-            acc | ((byte as u32) << 6 * (3 - j))
-        });
-
-        let bytes = u32::to_be_bytes(uint);
-        result.extend_from_slice(&bytes[1..]);
-    }
-
-    result.truncate(result.len() - skip_bytes);
-    result
-}
 
 pub fn fixed_xor(x: &[u8], y: &[u8]) -> Vec<u8> {
     assert_eq!(x.len(), y.len());
@@ -106,23 +19,6 @@ pub fn fixed_xor(x: &[u8], y: &[u8]) -> Vec<u8> {
     (0..x.len())
         .map(|i| x[i] ^ y[i])
         .collect()
-}
-
-pub fn apply_to_files<P, F>(src: P, cb: &mut F) -> io::Result<()> 
-where
-    P: AsRef<Path>,
-    F: FnMut(&Path) -> io::Result<()>,
-{
-    let src = src.as_ref();
-    if src.is_dir() {
-        for entry in fs::read_dir(src)? {
-            let path = entry?.path();
-            apply_to_files(&path, cb)?;
-        }
-        return Ok(())
-    } 
-
-    cb(src)
 }
 
 pub struct DecryptSingleByteXorResult {
@@ -232,7 +128,7 @@ impl TryFrom<&Path> for FrequencyTable {
     fn try_from(src: &Path) -> Result<Self, Self::Error> {
         let mut table = FrequencyTable::new();
 
-        apply_to_files(src, &mut |file| {
+        common::apply_to_files(src, &mut |file| {
             for c in fs::read_to_string(file)?.chars() {
                 table.update(c)
             }
@@ -316,7 +212,7 @@ impl DecryptorXorRepeatingKey {
     }
 
     fn find_keysizes(ciphertext: &[u8]) -> [usize; Self::NUMBER_OF_KEYSIZES] {
-        let max_keysize = min(Self::MAX_KEYSIZE, ciphertext.len() / Self::BLOCKS_TO_EVALUATE);
+        let max_keysize = cmp::min(Self::MAX_KEYSIZE, ciphertext.len() / Self::BLOCKS_TO_EVALUATE);
         let mut heap = BinaryHeap::with_capacity(max_keysize - 1);
 
         for keysize in 2..=max_keysize {
@@ -374,118 +270,14 @@ mod tests {
     const FREQUENCY_TABLE_PATH: &str = "./data/frequency_table.bin";
 
     #[test]
-    fn test_hex_encode() {
-        let bytes = [73, 39, 109, 32, 107, 105, 108, 108, 105, 110, 103, 32, 121, 111, 117, 114, 32, 98, 114, 97, 105, 110, 32, 108, 105, 107, 101, 32, 97, 32, 112, 111, 105, 115, 111, 110, 111, 117, 115, 32, 109, 117, 115, 104, 114, 111, 111, 109];
-        let expected_hex_string = String::from("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d");
-        
-        assert_eq!(expected_hex_string, hex_encode(&bytes));
-    }
-
-    #[test]
-    fn test_hex_decode() {
-        let hex_string = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d";
-        let expected_bytes = vec![73, 39, 109, 32, 107, 105, 108, 108, 105, 110, 103, 32, 121, 111, 117, 114, 32, 98, 114, 97, 105, 110, 32, 108, 105, 107, 101, 32, 97, 32, 112, 111, 105, 115, 111, 110, 111, 117, 115, 32, 109, 117, 115, 104, 114, 111, 111, 109];
-
-        assert_eq!(expected_bytes, hex_decode(hex_string).unwrap());
-    }
-
-    #[test]
-    fn test_base64_encode() {
-        let bytes = hex_decode("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d").unwrap();
-        let expected_base64_string = String::from("SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t");
-    
-        let base64_string = base64_encode(&bytes);
-        let base64_string = String::from_utf8(base64_string).unwrap();
-
-        assert_eq!(expected_base64_string, base64_string);
-    }
-
-    #[test]    
-    fn test_base64_encode_with_padding() {
-        let bytes = "Ma".as_bytes();
-        let expected_base64_string = String::from("TWE=");
-    
-        let base64_string = base64_encode(&bytes);
-        let base64_string = String::from_utf8(base64_string).unwrap();
-
-        assert_eq!(expected_base64_string, base64_string);
-    }
-
-    #[test]    
-    fn test_base64_encode_with_two_paddings() {
-        let bytes = "M".as_bytes();
-        let expected_base64_string = String::from("TQ==");
-    
-        let base64_string = base64_encode(&bytes);
-        let base64_string = String::from_utf8(base64_string).unwrap();
-
-        assert_eq!(expected_base64_string, base64_string);
-    }
-
-    #[test]
-    fn test_base64_decode() {
-        let base64_string = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
-        let expected_hex_string = String::from("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d");
-    
-        let hex_string = base64_decode(base64_string.as_bytes());
-        let hex_string = hex_encode(&hex_string);
-
-        assert_eq!(expected_hex_string, hex_string);
-    }
-
-    #[test]
-    fn test_base64_decode_with_padding() {
-        let base64_string = "TWE=";
-        let expected_string = "Ma".as_bytes();
-    
-        let string = base64_decode(base64_string.as_bytes());
-
-        assert_eq!(expected_string, string);
-    }
-
-    #[test]
-    fn test_base64_decode_with_two_paddings() {
-        let base64_string = "TQ==";
-        let expected_string = "M".as_bytes();
-    
-        let string = base64_decode(base64_string.as_bytes());
-
-        assert_eq!(expected_string, string);
-    }
-
-    #[test]
     fn test_fixed_xor() {
-        let s1 = hex_decode("1c0111001f010100061a024b53535009181c").unwrap();
-        let s2 = hex_decode("686974207468652062756c6c277320657965").unwrap();
+        let s1 = common::hex_decode("1c0111001f010100061a024b53535009181c").unwrap();
+        let s2 = common::hex_decode("686974207468652062756c6c277320657965").unwrap();
 
-        let expected_bytes = hex_decode("746865206b696420646f6e277420706c6179").unwrap();
+        let expected_bytes = common::hex_decode("746865206b696420646f6e277420706c6179").unwrap();
 
         assert_eq!(expected_bytes, fixed_xor(&s1, &s2));
-    }
-
-    #[test]
-    fn test_apply_to_files() {
-        let first_dir = PathBuf::from("./test1");
-        let second_dir = first_dir.join("test2");
-        fs::create_dir_all(&second_dir).unwrap();
-
-        let file1_path =  first_dir.join("test1.txt");
-        File::create(&file1_path).unwrap();
-
-        let file2_path = second_dir.join("test2.txt");
-        File::create(&file2_path).unwrap();
-
-        let mut files = Vec::new();
-        apply_to_files(&first_dir, &mut |file| {
-            let file = file.to_path_buf();
-            Ok(files.push(file))
-        }).unwrap();
-        files.sort();
-
-        fs::remove_dir_all(first_dir).unwrap();
-
-        assert_eq!(vec![file1_path, file2_path], files);
-    }
+    } 
 
     fn assert_frequency_table(table: &FrequencyTable) {
         assert_eq!(5f32 / 12f32 * 100f32, table.get_freq('a').unwrap());
@@ -540,7 +332,7 @@ mod tests {
         let table_bytes= fs::read(FREQUENCY_TABLE_PATH).unwrap();
         let table: FrequencyTable = bincode::deserialize(&table_bytes).unwrap();
 
-        let ciphertext = hex_decode("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736").unwrap();
+        let ciphertext = common::hex_decode("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736").unwrap();
         let result = table.decrypt_single_byte_xor(&ciphertext);
         let plaintext = str::from_utf8(&result.plaintext).unwrap();
 
@@ -559,7 +351,7 @@ mod tests {
     
         for line in BufReader::new(file).lines() {
             let line = line.unwrap();
-            let line = hex_decode(&line).unwrap();
+            let line = common::hex_decode(&line).unwrap();
             let result = table.decrypt_single_byte_xor(&line);
 
             if result.err < best_err {
@@ -580,7 +372,7 @@ mod tests {
         let mut encryptor = XORerRepeatingKey::new(key);
 
         let ciphertext = encryptor.xor(plaintext.as_bytes());
-        let expected_ciphertext = hex_decode("0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272\
+        let expected_ciphertext = common::hex_decode("0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272\
                                                        a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f").unwrap();
 
         assert_eq!(expected_ciphertext, ciphertext);
@@ -601,7 +393,7 @@ mod tests {
         let decryptor = DecryptorXorRepeatingKey::new(table);
 
         let ciphertext = fs::read_to_string("./data/set1_challenge6.txt").unwrap().replace("\n", "");
-        let ciphertext = base64_decode(ciphertext.as_bytes());
+        let ciphertext = common::base64_decode(ciphertext.as_bytes());
 
         let plaintext = decryptor.decrypt(&ciphertext);
         assert!(String::from_utf8(plaintext).unwrap().is_ascii());

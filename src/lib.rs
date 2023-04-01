@@ -1,1 +1,2 @@
-pub mod set1;
+pub mod common;
+pub mod xor;
